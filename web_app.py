@@ -1,3 +1,4 @@
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -5,7 +6,7 @@ from typing import Any
 from flask import Flask, jsonify, request
 from werkzeug.exceptions import HTTPException
 
-from buddy_matcher import BuddyMatcher, read_json
+from buddy_matcher import BuddyMatcher, is_demo_mode_enabled, is_truthy, read_json
 
 
 app = Flask(__name__)
@@ -607,31 +608,49 @@ def seed_employees():
 
 @app.post("/api/assign")
 def assign_buddy():
+    return assign_buddy_response()
+
+
+@app.post("/api/assign-demo")
+def assign_buddy_demo():
+    return assign_buddy_response(force_demo=True)
+
+
+def assign_buddy_response(force_demo: bool = False):
     new_employee = request.get_json(silent=True) or {}
+    demo_requested = (
+        force_demo
+        or is_demo_mode_enabled()
+        or is_truthy(request.args.get("demo"))
+        or is_truthy(new_employee.get("demo_mode"))
+    )
+    new_employee = {key: value for key, value in new_employee.items() if key != "demo_mode"}
+
     try:
-        buddy = BuddyMatcher().assign_buddy(normalize_employee(new_employee))
+        buddy = BuddyMatcher().assign_buddy(normalize_employee(new_employee), demo_mode=demo_requested)
     except RuntimeError as exc:
         return api_error(str(exc), 400)
     except Exception as exc:
         return api_error(str(exc), 500)
 
     metadata = buddy["metadata"]
-    return jsonify(
-        {
-            "employee_id": metadata["employee_id"],
-            "name": metadata["name"],
-            "role": metadata["role"],
-            "domain": metadata["domain"],
-            "department": metadata["department"],
-            "location": metadata["location"],
-            "skills": metadata.get("skills", []),
-            "experience_years": metadata.get("experience_years", 0),
-            "match_source": buddy["source"],
-            "semantic_score": float(buddy["semantic_score"]),
-            "rerank_score": float(buddy["rerank_score"]),
-            "reason": buddy["llm_reason"],
-        }
-    )
+    response = {
+        "employee_id": metadata["employee_id"],
+        "name": metadata["name"],
+        "role": metadata["role"],
+        "domain": metadata["domain"],
+        "department": metadata["department"],
+        "location": metadata["location"],
+        "skills": metadata.get("skills", []),
+        "experience_years": metadata.get("experience_years", 0),
+        "match_source": buddy["source"],
+        "semantic_score": float(buddy["semantic_score"]),
+        "rerank_score": float(buddy["rerank_score"]),
+        "reason": buddy["llm_reason"],
+    }
+    if demo_requested:
+        response["steps"] = buddy.get("demo_steps", [])
+    return jsonify(response)
 
 
 def employee_profile_summary(employee: dict[str, Any]) -> str:
@@ -915,4 +934,8 @@ def handle_unexpected_error(error: Exception):
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=8800, debug=False)
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 8080)),
+        debug=False,
+    )

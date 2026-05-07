@@ -34,6 +34,8 @@ GEMINI_API_KEY=...
 PINECONE_API_KEY=...
 ```
 
+Use real keys here. Placeholder values like `x`, `xx`, or `...` will be rejected.
+
 ## Run CLI
 
 Seed existing employees into Pinecone:
@@ -48,6 +50,41 @@ Assign a buddy for the sample new employee:
 python buddy_matcher.py assign --new-employee new_employee.json
 ```
 
+## Run Demo Mode
+
+Use demo mode for a meeting-friendly process overview:
+
+```bash
+python app.py --demo
+```
+
+You can also run the existing CLI command with `--demo`:
+
+```bash
+python buddy_matcher.py assign --new-employee new_employee.json --demo
+```
+
+Or enable it from `.env`:
+
+```bash
+DEMO_MODE=true
+```
+
+Demo mode shows only the high-level story: new employee received, profile prepared, embedding preview, Pinecone search, top 3 candidates, reranked top 3, and the final buddy.
+
+For the web app, `POST /api/assign-demo` returns the normal buddy response plus a simple `steps` array.
+
+## Run with Docker
+
+Build and run locally:
+
+```bash
+docker build -t employee-buddy-poc .
+docker run --env-file .env -p 8080:8080 employee-buddy-poc
+```
+
+For Cloud Run, set `GEMINI_API_KEY` and `PINECONE_API_KEY` as service environment variables or secrets. The local `.env` file is not copied into the Docker image.
+
 ## Run Frontend
 
 Start the basic Flask frontend:
@@ -59,7 +96,7 @@ python web_app.py
 Open:
 
 ```text
-http://127.0.0.1:8000
+http://127.0.0.1:8080
 ```
 
 Use **Seed Employee KB** once to load `employees.json` into Pinecone, then write one short HR summary for the new employee and use **Assign Buddy**.
