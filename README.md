@@ -85,6 +85,10 @@ docker run --env-file .env -p 8080:8080 employee-buddy-poc
 
 For Cloud Run, set `GEMINI_API_KEY` and `PINECONE_API_KEY` as service environment variables or secrets. The local `.env` file is not copied into the Docker image.
 
+## Cloud Build Trigger
+
+Use `cloudbuild.yaml` as the build configuration file in the trigger settings. By default it deploys Cloud Run service `employee-buddy-poc` in `us-central1`; change `_SERVICE_NAME` or `_REGION` in the trigger substitutions if your Cloud Run service uses a different name or region.
+
 ## Run Frontend
 
 Start the basic Flask frontend:
