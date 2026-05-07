@@ -1,0 +1,12 @@
+{
+  "employee_id": "NEW001",
+  "name": "Kavya Rao",
+  "role": "Data Scientist",
+  "domain": "AI/ML",
+  "skills": ["Python", "RAG", "Embeddings", "Pinecone"],
+  "experience_years": 2,
+  "department": "AI Team",
+  "location": "Jaipur",
+  "interests": ["research", "mentoring"],
+  "previous_projects": ["document question answering"]
+}
