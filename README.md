@@ -74,6 +74,8 @@ Demo mode shows only the high-level story: new employee received, profile prepar
 
 For the web app, `POST /api/assign-demo` returns the normal buddy response plus a simple `steps` array.
 
+For implementation-level debugging, use `POST /api/assign-implementation-demo` or `POST /api/assign-full-demo`. This returns the complete process trace, including the generated embedding vector, Pinecone query details, fallback details when used, and per-candidate reranking scores.
+
 ## Run with Docker
 
 Build and run locally:

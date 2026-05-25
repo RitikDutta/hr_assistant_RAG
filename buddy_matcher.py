@@ -23,6 +23,14 @@ EMBEDDING_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", "768"))
 SEMANTIC_SCORE_THRESHOLD = float(os.getenv("SEMANTIC_SCORE_THRESHOLD", "0.72"))
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 PLACEHOLDER_API_KEYS = {"x", "xx", "xxx", "...", "replace-me", "your-key-here"}
+RERANK_WEIGHTS = {
+    "semantic_score": 0.45,
+    "skill_overlap": 0.20,
+    "domain_match": 0.15,
+    "department_match": 0.10,
+    "interest_overlap": 0.05,
+    "location_match": 0.05,
+}
 
 
 def is_truthy(value: Any) -> bool:
@@ -75,25 +83,55 @@ def list_overlap(left: list[str], right: list[str]) -> float:
     return len(left_set & right_set) / len(left_set | right_set)
 
 
-def rerank_score(new_employee: dict[str, Any], candidate: dict[str, Any]) -> float:
-    semantic_score = float(candidate.get("semantic_score", 0.0))
+def matching_items(left: list[str], right: list[str]) -> list[str]:
+    right_lookup = {str(item).lower(): str(item) for item in right}
+    return sorted(right_lookup[item] for item in {str(item).lower() for item in left} & set(right_lookup))
+
+
+def rerank_details(new_employee: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
     metadata = candidate["metadata"]
 
+    semantic_score = float(candidate.get("semantic_score", 0.0))
     skill_score = list_overlap(new_employee.get("skills", []), metadata.get("skills", []))
     interest_score = list_overlap(new_employee.get("interests", []), metadata.get("interests", []))
     domain_score = 1.0 if new_employee.get("domain") == metadata.get("domain") else 0.0
     department_score = 1.0 if new_employee.get("department") == metadata.get("department") else 0.0
     location_score = 1.0 if new_employee.get("location") == metadata.get("location") else 0.0
 
-    return round(
-        (semantic_score * 0.45)
-        + (skill_score * 0.20)
-        + (domain_score * 0.15)
-        + (department_score * 0.10)
-        + (interest_score * 0.05)
-        + (location_score * 0.05),
-        4,
-    )
+    weighted_scores = {
+        "semantic_score": round(semantic_score * RERANK_WEIGHTS["semantic_score"], 4),
+        "skill_overlap": round(skill_score * RERANK_WEIGHTS["skill_overlap"], 4),
+        "domain_match": round(domain_score * RERANK_WEIGHTS["domain_match"], 4),
+        "department_match": round(department_score * RERANK_WEIGHTS["department_match"], 4),
+        "interest_overlap": round(interest_score * RERANK_WEIGHTS["interest_overlap"], 4),
+        "location_match": round(location_score * RERANK_WEIGHTS["location_match"], 4),
+    }
+    final_score = round(sum(weighted_scores.values()), 4)
+
+    return {
+        "raw_scores": {
+            "semantic_score": round(semantic_score, 4),
+            "skill_overlap": round(skill_score, 4),
+            "domain_match": domain_score,
+            "department_match": department_score,
+            "interest_overlap": round(interest_score, 4),
+            "location_match": location_score,
+        },
+        "matches": {
+            "skills": matching_items(new_employee.get("skills", []), metadata.get("skills", [])),
+            "interests": matching_items(new_employee.get("interests", []), metadata.get("interests", [])),
+            "domain": new_employee.get("domain") == metadata.get("domain"),
+            "department": new_employee.get("department") == metadata.get("department"),
+            "location": new_employee.get("location") == metadata.get("location"),
+        },
+        "weights": RERANK_WEIGHTS,
+        "weighted_scores": weighted_scores,
+        "final_score": final_score,
+    }
+
+
+def rerank_score(new_employee: dict[str, Any], candidate: dict[str, Any]) -> float:
+    return float(rerank_details(new_employee, candidate)["final_score"])
 
 
 def pinecone_response_to_dict(response: Any) -> dict[str, Any]:
@@ -162,6 +200,45 @@ def ranked_candidate_lines(candidates: list[dict[str, Any]], limit: int = 3) -> 
         f"{index}. {candidate_name(candidate)} - Final Score: {float(candidate.get('rerank_score', 0.0)):.2f}"
         for index, candidate in enumerate(candidates[:limit], start=1)
     ]
+
+
+def semantic_filter() -> dict[str, Any]:
+    return {"availability_for_buddy": {"$eq": True}}
+
+
+def fallback_filter(new_employee: dict[str, Any]) -> dict[str, Any]:
+    metadata_filter = semantic_filter()
+    for key in ("department", "domain"):
+        value = new_employee.get(key)
+        if value:
+            metadata_filter[key] = {"$eq": value}
+    return metadata_filter
+
+
+def embedding_values(values: list[float]) -> list[float]:
+    return [float(value) for value in values]
+
+
+def candidate_details(candidate: dict[str, Any], include_rerank: bool = False) -> dict[str, Any]:
+    metadata = candidate.get("metadata", {})
+    details = {
+        "employee_id": candidate.get("employee_id") or metadata.get("employee_id"),
+        "name": metadata.get("name"),
+        "role": metadata.get("role"),
+        "domain": metadata.get("domain"),
+        "department": metadata.get("department"),
+        "location": metadata.get("location"),
+        "skills": metadata.get("skills", []),
+        "interests": metadata.get("interests", []),
+        "availability_for_buddy": metadata.get("availability_for_buddy"),
+        "source": candidate.get("source"),
+        "semantic_score": float(candidate.get("semantic_score", 0.0)),
+        "metadata": metadata,
+    }
+    if include_rerank:
+        details["rerank_score"] = float(candidate.get("rerank_score", 0.0))
+        details["rerank_details"] = candidate.get("rerank_details", {})
+    return details
 
 
 def demo_step(title: str, lines: list[str]) -> dict[str, Any]:
@@ -315,7 +392,7 @@ class BuddyMatcher:
             top_k=top_k,
             namespace=NAMESPACE,
             include_metadata=True,
-            filter={"availability_for_buddy": {"$eq": True}},
+            filter=semantic_filter(),
         )
 
         candidates = []
@@ -336,18 +413,12 @@ class BuddyMatcher:
         top_k: int = 5,
         query_vector: list[float] | None = None,
     ) -> list[dict[str, Any]]:
-        metadata_filter: dict[str, Any] = {"availability_for_buddy": {"$eq": True}}
-        for key in ("department", "domain"):
-            value = new_employee.get(key)
-            if value:
-                metadata_filter[key] = {"$eq": value}
-
         query_response = self.index().query(
             vector=query_vector if query_vector is not None else self.embed(employee_text(new_employee)),
             top_k=top_k,
             namespace=NAMESPACE,
             include_metadata=True,
-            filter=metadata_filter,
+            filter=fallback_filter(new_employee),
         )
 
         candidates = []
@@ -453,6 +524,102 @@ class BuddyMatcher:
         )
         if demo_mode:
             assigned_buddy["demo_steps"] = steps
+        return assigned_buddy
+
+    def assign_buddy_implementation_demo(self, new_employee: dict[str, Any]) -> dict[str, Any]:
+        steps: list[dict[str, Any]] = []
+        profile_text = employee_text(new_employee)
+
+        def add_step(title: str, data: dict[str, Any]) -> None:
+            steps.append({"title": title, "data": data})
+
+        add_step(
+            "STEP 1: New employee profile received",
+            {
+                "new_employee": new_employee,
+            },
+        )
+        add_step(
+            "STEP 2: Profile converted for semantic search",
+            {
+                "profile_text": profile_text,
+            },
+        )
+
+        query_embedding = self.embed(profile_text)
+        add_step(
+            "STEP 3: Embedding generated",
+            {
+                "status": "done",
+                "model": EMBEDDING_MODEL,
+                "dimensions": len(query_embedding),
+                "vector": embedding_values(query_embedding),
+            },
+        )
+
+        semantic_matches = self.semantic_candidates(new_employee, query_vector=query_embedding)
+        candidates = semantic_matches
+        add_step(
+            "STEP 4: Pinecone semantic search completed",
+            {
+                "index": INDEX_NAME,
+                "namespace": NAMESPACE,
+                "top_k": 5,
+                "filter": semantic_filter(),
+                "semantic_score_threshold": SEMANTIC_SCORE_THRESHOLD,
+                "candidates": [candidate_details(candidate) for candidate in semantic_matches],
+            },
+        )
+
+        fallback_used = False
+        if not candidates or candidates[0]["semantic_score"] < SEMANTIC_SCORE_THRESHOLD:
+            fallback_used = True
+            candidates = self.fallback_candidates(new_employee, query_vector=query_embedding)
+            add_step(
+                "STEP 5: Metadata fallback search completed",
+                {
+                    "reason": "No semantic candidate was found or the top semantic score was below the configured threshold.",
+                    "filter": fallback_filter(new_employee),
+                    "candidates": [candidate_details(candidate) for candidate in candidates],
+                },
+            )
+
+        if not candidates:
+            raise RuntimeError("No available buddy found from semantic search or metadata fallback.")
+
+        for candidate in candidates:
+            details = rerank_details(new_employee, candidate)
+            candidate["rerank_details"] = details
+            candidate["rerank_score"] = details["final_score"]
+
+        ranked_candidates = sorted(candidates, key=lambda item: item["rerank_score"], reverse=True)
+        add_step(
+            f"STEP {len(steps) + 1}: Candidate reranking completed",
+            {
+                "formula": (
+                    "semantic_score * 0.45 + skill_overlap * 0.20 + domain_match * 0.15 + "
+                    "department_match * 0.10 + interest_overlap * 0.05 + location_match * 0.05"
+                ),
+                "weights": RERANK_WEIGHTS,
+                "ranked_candidates": [
+                    candidate_details(candidate, include_rerank=True) for candidate in ranked_candidates
+                ],
+            },
+        )
+
+        assigned_buddy = ranked_candidates[0]
+        assigned_buddy["llm_reason"] = self.explain_match(new_employee, assigned_buddy, ranked_candidates[:3])
+        add_step(
+            "FINAL RESULT",
+            {
+                "fallback_used": fallback_used,
+                "assigned_buddy": candidate_details(assigned_buddy, include_rerank=True),
+                "reason_model": GEMINI_MODEL,
+                "reason": assigned_buddy["llm_reason"],
+            },
+        )
+
+        assigned_buddy["implementation_steps"] = steps
         return assigned_buddy
 
     def explain_match(

@@ -616,6 +616,25 @@ def assign_buddy_demo():
     return assign_buddy_response(force_demo=True)
 
 
+@app.post("/api/assign-implementation-demo")
+@app.post("/api/assign-full-demo")
+def assign_buddy_implementation_demo():
+    new_employee = request.get_json(silent=True) or {}
+    new_employee = {key: value for key, value in new_employee.items() if key != "demo_mode"}
+
+    try:
+        buddy = BuddyMatcher().assign_buddy_implementation_demo(normalize_employee(new_employee))
+    except RuntimeError as exc:
+        return api_error(str(exc), 400)
+    except Exception as exc:
+        return api_error(str(exc), 500)
+
+    response = buddy_response_payload(buddy)
+    response["mode"] = "implementation_demo"
+    response["steps"] = buddy.get("implementation_steps", [])
+    return jsonify(response)
+
+
 def assign_buddy_response(force_demo: bool = False):
     new_employee = request.get_json(silent=True) or {}
     demo_requested = (
@@ -633,8 +652,15 @@ def assign_buddy_response(force_demo: bool = False):
     except Exception as exc:
         return api_error(str(exc), 500)
 
+    response = buddy_response_payload(buddy)
+    if demo_requested:
+        response["steps"] = buddy.get("demo_steps", [])
+    return jsonify(response)
+
+
+def buddy_response_payload(buddy: dict[str, Any]) -> dict[str, Any]:
     metadata = buddy["metadata"]
-    response = {
+    return {
         "employee_id": metadata["employee_id"],
         "name": metadata["name"],
         "role": metadata["role"],
@@ -648,9 +674,6 @@ def assign_buddy_response(force_demo: bool = False):
         "rerank_score": float(buddy["rerank_score"]),
         "reason": buddy["llm_reason"],
     }
-    if demo_requested:
-        response["steps"] = buddy.get("demo_steps", [])
-    return jsonify(response)
 
 
 def employee_profile_summary(employee: dict[str, Any]) -> str:
